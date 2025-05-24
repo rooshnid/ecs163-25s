@@ -1,0 +1,414 @@
+
+  
+    // Helper functions to get rid of null data ones
+    function normalizeYear(year) {
+      if (!year) return null;
+      year = year.trim().toLowerCase();
+      if (year.includes("1")) return "Year 1";
+      if (year.includes("2")) return "Year 2";
+      if (year.includes("3")) return "Year 3";
+      if (year.includes("4")) return "Year 4";
+      return null;
+    }
+    function normalizeCGPA(cgpa) {
+      if (!cgpa) return null;
+      let num = parseFloat(cgpa.replace(/,/g, '.'));
+      if (isNaN(num)) return null;
+      return num;
+    }
+    function normalizeCourse(course) {
+      return course ? course.trim() : "Unknown";
+    }
+
+    // Constants
+    const years = ["Year 1", "Year 2", "Year 3", "Year 4"];
+    const cgpaBins = [2.0, 2.5, 3.0, 3.5, 4.0];
+    const cgpaLabels = ["2.0-2.5", "2.5-3.0", "3.0-3.5", "3.5-4.0"];
+    const conditions = [
+      {key: "Do you have Depression?", label: "Depression"},
+      {key: "Do you have Anxiety?", label: "Anxiety"},
+      {key: "Do you have Panic attack?", label: "Panic Attack"}
+    ];
+    const colorScale = d3.scaleOrdinal()
+      .domain(conditions.map(d=>d.label))
+      .range(["#5ab4ac", "#d8b365", "#f46d43"]);
+
+    // State variables for interactivity
+    let selectedYear = null;
+    let selectedCGPARange = null;
+
+    // Tooltip 
+    const tooltip = d3.select("body").append("div")
+      .attr("class", "tooltip")
+      .style("opacity", 0);
+
+    // Load data and draw
+    d3.csv("Student Mental health.csv").then(data => {
+      // STACKED BAR CHART 
+      const barMargin = {top: 20, right: 20, bottom: 40, left: 60},
+            barWidth = 820 - barMargin.left - barMargin.right,
+            barHeight = 180 - barMargin.top - barMargin.bottom;
+      // Create main SVG group for the bar chart
+      const svgBar = d3.select("#stacked-bar")
+        .attr("viewBox", `0 0 900 240`)
+        .append("g")
+        .attr("transform", `translate(${barMargin.left},${barMargin.top})`);
+    // Function to aggregate data for the bar chart
+      function barChartData() {
+        let yearConditionCounts = {};
+        years.forEach(y => yearConditionCounts[y] = {"Depression": 0, "Anxiety": 0, "Panic Attack": 0});
+        data.forEach(d => {
+          const year = normalizeYear(d["Your current year of Study"]);
+          if (!year) return;
+          // Filter by CGPA if heatmap brushing is active
+          if (selectedCGPARange) {
+            const cgpa = normalizeCGPA(d["What is your CGPA?"]);
+            if (!cgpa || cgpa < selectedCGPARange[0] || cgpa >= selectedCGPARange[1]) return;
+          }
+           // Count each mental health condition
+          conditions.forEach(cond => {
+            if (d[cond.key] && d[cond.key].trim().toLowerCase() === "yes") {
+              yearConditionCounts[year][cond.label]++;
+            }
+          });
+        });
+        // Return data 
+        return years.map(year => ({
+          year: year,
+          ...yearConditionCounts[year]
+        }));
+      }
+      // Draw or update the stacked bar chart
+      function drawBarChart() {
+        const chartData = barChartData();
+        const stack = d3.stack().keys(conditions.map(d => d.label));
+        const series = stack(chartData);
+        // X scale for years
+        const xBar = d3.scaleBand()
+          .domain(years)
+          .range([0, barWidth])
+          .padding(0.18);
+           // Y scale for student counts
+        const yBar = d3.scaleLinear()
+          .domain([0, d3.max(chartData, d => d.Depression + d.Anxiety + d["Panic Attack"])])
+          .range([barHeight, 0]);
+          // Remove previous chart elements before redrawing
+        svgBar.selectAll("*").remove();
+        // Add X axis (years)
+        svgBar.append("g")
+          .attr("transform", `translate(0,${barHeight})`)
+          .call(d3.axisBottom(xBar));
+          // Add Y axis (student count)
+        svgBar.append("g")
+          .call(d3.axisLeft(yBar));
+           // Add Y axis label
+        svgBar.append("text")
+          .attr("class", "axis-label")
+          .attr("x", -barHeight/2)
+          .attr("y", -45)
+          .attr("transform", "rotate(-90)")
+          .attr("text-anchor", "middle")
+          .text("Number of Students");
+           // Add X axis label
+        svgBar.append("text")
+          .attr("class", "axis-label")
+          .attr("x", barWidth/2)
+          .attr("y", barHeight+35)
+          .attr("text-anchor", "middle")
+          .text("Year");
+
+        // Draw bars
+        svgBar.selectAll(".bar-group")
+          .data(series)
+          .join("g")
+          .attr("class", "bar-group")
+          .attr("fill", d => colorScale(d.key))
+          .selectAll("rect")
+          .data(d => d)
+          .join("rect")
+          .attr("class", "bar")
+          .attr("x", d => xBar(d.data.year))
+          .attr("width", xBar.bandwidth())
+          .attr("y", barHeight)
+          .attr("height", 0)
+          .on("mouseover", (event, d) => {
+               // Show tooltip with year and count
+            tooltip.style("opacity",1)
+              .html(`<b>${d.data.year}</b><br>${d3.select(event.currentTarget.parentNode).datum().key}: ${d[1]-d[0]}`)
+              .style("left", (event.pageX+15)+"px")
+              .style("top", (event.pageY-15)+"px");
+          })
+          .on("mouseout", () => tooltip.style("opacity",0))
+          .on("click", (event, d) => {
+              // Select/deselect a year then update all charts
+            selectedYear = d.data.year === selectedYear ? null : d.data.year;
+            drawBarChart();
+            drawHeatmap();
+            drawSankey();
+          })
+          .transition()
+          .duration(800)
+          .attr("y", d => yBar(d[1]))
+          .attr("height", d => yBar(d[0]) - yBar(d[1]));
+
+        // Highlight selected
+        svgBar.selectAll(".bar")
+          .classed("selected", d => selectedYear && d.data.year === selectedYear)
+          .attr("opacity", d => selectedYear && d.data.year !== selectedYear ? 0.4 : 1);
+      }
+      drawBarChart();
+
+      // Bar chart legend
+      d3.select("#bar-legend").html(
+        conditions.map(cond =>
+          `<span style="display:inline-block;width:18px;height:12px;background:${colorScale(cond.label)};margin-right:4px;"></span>${cond.label}`
+        ).join("&nbsp;&nbsp;")
+      );
+
+      // SANKEY 
+      const sankeyWidth = 400, sankeyHeight = 280;
+         // Create the main SVG group for the Sankey diagram
+      const svgSankey = d3.select("#sankey")
+        .attr("viewBox", `0 0 420 320`)
+        .append("g")
+        .attr("transform", "translate(10,20)");
+      // Draw or update the Sankey diagram
+      function drawSankey() {
+        // Prepare filtered data
+        let filtered = data.filter(d => {
+          if (selectedYear && normalizeYear(d["Your current year of Study"]) !== selectedYear) return false;
+          if (selectedCGPARange) {
+            const cgpa = normalizeCGPA(d["What is your CGPA?"]);
+            if (!cgpa || cgpa < selectedCGPARange[0] || cgpa >= selectedCGPARange[1]) return false;
+          }
+          return true;
+        });
+
+        // Top 5 courses
+        let courseCounts = d3.rollup(filtered, v=>v.length, d=>normalizeCourse(d["What is your course?"]));
+        let topCourses = Array.from(courseCounts.entries())
+          .sort((a,b)=>d3.descending(a[1],b[1])).slice(0,5).map(d=>d[0]);
+
+        // Sankey nodes and links
+        let nodes = [], links = [];
+        let nodeMap = {};
+        // Add course nodes
+        topCourses.forEach(c => { nodeMap[c]=nodes.length; nodes.push({name:c}); });
+        // Add year nodes
+        years.forEach(y => { nodeMap[y]=nodes.length; nodes.push({name:y}); });
+        // Add Depression nodes
+        ["Yes","No"].forEach(d => { nodeMap["Depression:"+d]=nodes.length; nodes.push({name:"Depression: "+d}); });
+
+        // course>year
+        topCourses.forEach(c => {
+          years.forEach(y => {
+            let count = filtered.filter(d =>
+              normalizeCourse(d["What is your course?"]) === c &&
+              normalizeYear(d["Your current year of Study"]) === y
+            ).length;
+            if (count > 0)
+              links.push({source: nodeMap[c], target: nodeMap[y], value: count});
+          });
+        });
+        // year>depression
+        years.forEach(y => {
+          ["Yes","No"].forEach(dv => {
+            let count = filtered.filter(d =>
+              normalizeYear(d["Your current year of Study"]) === y &&
+              d["Do you have Depression?"] && d["Do you have Depression?"].trim().toLowerCase() === dv.toLowerCase()
+            ).length;
+            if (count > 0)
+              links.push({source: nodeMap[y], target: nodeMap["Depression:"+dv], value: count});
+          });
+        });
+
+        // Sankey layout
+        const sankeyGen = d3.sankey()
+          .nodeWidth(18)
+          .nodePadding(18)
+          .extent([[0,0],[sankeyWidth-20,sankeyHeight-20]]);
+        const sankeyData = sankeyGen({nodes: nodes.map(d=>Object.assign({},d)), links: links.map(d=>Object.assign({},d))});
+
+        // Clear
+        svgSankey.selectAll("*").remove();   //Took idea from Claude AI 
+
+        // Draw links
+        svgSankey.append("g")
+          .selectAll("path")
+          .data(sankeyData.links)
+          .join("path")
+          .attr("d", d3.sankeyLinkHorizontal())
+          .attr("stroke", "#888")
+          .attr("stroke-width", d => Math.max(1, d.width))
+          .attr("fill", "none")
+          .attr("opacity", 0.42)
+          .on("mouseover", (event, d) => {
+            tooltip.style("opacity",1)
+              .html(`${d.source.name} → ${d.target.name}<br><b>${d.value}</b> students`)
+              .style("left", (event.pageX+10)+"px")
+              .style("top", (event.pageY-10)+"px");
+          })
+          .on("mouseout", () => tooltip.style("opacity",0))
+          .transition()
+          .duration(700)
+          .attrTween("stroke-width", function(d) {
+            const i = d3.interpolate(0, Math.max(1, d.width));
+            return t => i(t);
+          });
+
+        // Draw nodes
+        svgSankey.append("g")
+          .selectAll("rect")
+          .data(sankeyData.nodes)
+          .join("rect")
+          .attr("x", d => d.x0)
+          .attr("y", d => d.y0)
+          .attr("height", d => d.y1 - d.y0)
+          .attr("width", d => d.x1 - d.x0)
+          .attr("fill", d => d.name.startsWith("Depression") ? "#f46d43" : d.name.startsWith("Year") ? "#5ab4ac" : "#d8b365")
+          .attr("stroke", "#333")
+          .attr("opacity", 0.88);
+
+        // Draw labels
+        svgSankey.append("g")
+          .selectAll("text")
+          .data(sankeyData.nodes)
+          .join("text")
+          .attr("x", d => d.x0 < sankeyWidth/2 ? d.x1 + 4 : d.x0 - 4)
+          .attr("y", d => (d.y0 + d.y1)/2)
+          .attr("dy", "0.35em")
+          .attr("text-anchor", d => d.x0 < sankeyWidth/2 ? "start" : "end")
+          .attr("class", "sankey-label")
+          .text(d => d.name);
+      }
+      drawSankey();
+
+      // HEATMAP
+      const heatmapMargin = {top: 30, right: 20, bottom: 40, left: 60},
+            heatmapWidth = 340,
+            heatmapHeight = 220;
+       // Create the main SVG group for the heatmap
+      const svgHeatmap = d3.select("#heatmap")
+        .attr("viewBox", `0 0 420 320`)
+        .append("g")
+        .attr("transform", `translate(${heatmapMargin.left},${heatmapMargin.top})`);
+      // X scale for CGPA bins
+      const xCGPA = d3.scaleBand()
+        .domain(cgpaLabels)
+        .range([0, heatmapWidth])
+        .padding(0.08);
+          // Y scale for years
+      const yYear = d3.scaleBand()
+        .domain(years)
+        .range([0, heatmapHeight])
+        .padding(0.08);
+         // Color scale for heatmap values
+      const colorHeat = d3.scaleSequential(d3.interpolateYlOrRd)
+        .domain([0, 25]);
+     // Add X axis (CGPA bins)
+      svgHeatmap.append("g")
+        .attr("transform", `translate(0,${heatmapHeight})`)
+        .call(d3.axisBottom(xCGPA));
+       // Add Y axis (years)
+      svgHeatmap.append("g")
+        .call(d3.axisLeft(yYear));
+       // Add Y axis label
+      svgHeatmap.append("text")
+        .attr("class", "axis-label")
+        .attr("x", -heatmapHeight/2)
+        .attr("y", -45)
+        .attr("transform", "rotate(-90)")
+        .attr("text-anchor", "middle")
+        .text("Year");
+
+          // Add X axis label
+      svgHeatmap.append("text")
+        .attr("class", "axis-label")
+        .attr("x", heatmapWidth/2)
+        .attr("y", heatmapHeight+35)
+        .attr("text-anchor", "middle")
+        .text("CGPA Range");
+      // Add hint text for brushing
+        svgHeatmap.append("text")
+        .attr("x", heatmapWidth/2)
+        .attr("y", -18)
+        .attr("text-anchor", "middle")
+        .attr("fill", "#3366cc")
+        .attr("font-size", 13)
+        .text("Tip: Drag horizontally to filter by CGPA range");
+      // Add D3 brush for interactive CGPA selection         
+      const brush = d3.brushX()
+        .extent([[0,0], [heatmapWidth, heatmapHeight]])
+        .on("end", brushended);                    // took inspo help from Claude AI to understand brush logic for heatmap
+      svgHeatmap.append("g")
+        .attr("class", "brush")
+        .call(brush);
+     // Brushing handle update selection and all charts
+      function brushended(event) {
+        if (!event.selection) {               // used Claude AI to understand brush logic for heatmap
+          selectedCGPARange = null;
+        } else {
+          const [x0, x1] = event.selection;
+          const i0 = Math.floor(x0 / xCGPA.bandwidth());
+          const i1 = Math.ceil(x1 / xCGPA.bandwidth());
+          selectedCGPARange = [
+            cgpaBins[i0], cgpaBins[Math.min(i1, cgpaBins.length-1)]
+          ];
+        }
+        drawBarChart();
+        drawHeatmap();
+        drawSankey();
+      }
+       // Draw or update the heatmap
+      function drawHeatmap() {
+        let counts = {};
+        years.forEach(y => { counts[y]={}; cgpaLabels.forEach(c=>counts[y][c]=0); });
+        data.forEach(d => {
+          const year = normalizeYear(d["Your current year of Study"]);
+          const cgpa = normalizeCGPA(d["What is your CGPA?"]);
+          if (!year || !cgpa) return;
+          // If bar chart selection, filter
+          if (selectedYear && year !== selectedYear) return;
+          // If brushing, filter
+          if (selectedCGPARange && (cgpa < selectedCGPARange[0] || cgpa >= selectedCGPARange[1])) return;
+          // Bin CGPA
+          for (let i=0; i<cgpaBins.length-1; ++i) {
+            if (cgpa >= cgpaBins[i] && cgpa < cgpaBins[i+1]) {
+              counts[year][cgpaLabels[i]]++;
+              break;
+            }
+          }
+        });
+        let heatData = [];
+        years.forEach(y => cgpaLabels.forEach(c => heatData.push({
+          year: y, cgpa: c, value: counts[y][c]
+        })));
+        const cells = svgHeatmap.selectAll(".heatmap-cell")
+          .data(heatData, d=>d.year+"-"+d.cgpa);
+        cells.join(
+          enter => enter.append("rect")
+            .attr("class", "heatmap-cell")
+            .attr("x", d => xCGPA(d.cgpa))
+            .attr("y", d => yYear(d.year))
+            .attr("width", xCGPA.bandwidth())
+            .attr("height", yYear.bandwidth())
+            .attr("fill", "#fff")
+            .on("mouseover", (event, d) => {
+              tooltip.style("opacity",1)
+                .html(`<b>${d.year}, ${d.cgpa}</b><br>${d.value} students`)
+                .style("left", (event.pageX+15)+"px")
+                .style("top", (event.pageY-15)+"px");
+            })
+            .on("mouseout", () => tooltip.style("opacity",0))
+            .transition()
+            .duration(700)
+            .attr("fill", d => d.value>0 ? colorHeat(d.value) : "#eee"),
+          update => update
+            .transition()
+            .duration(700)
+            .attr("fill", d => d.value>0 ? colorHeat(d.value) : "#eee")
+        );
+      }
+      drawHeatmap();
+    });
+
